@@ -414,11 +414,29 @@ class googleDrive {
    * @returns {Response|null}
    */
   basicAuthResponse(request) {
-    const user = this.root.user || '',
-      pass = this.root.pass || '',
-      _401 = new Response('Unauthorized', {
-        headers: {'WWW-Authenticate': `Basic realm="goindex:drive:${this.order}"`},
-        status: 401
+    const user = this.root.user || "",
+      pass = this.root.pass || "",
+      _401_html = `
+        <!DOCTYPE html>
+        <html class="notranslate" translate="no" lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <title>401 Authorization Required</title>
+          <meta name="viewport" content="width=device-width,minimum-scale=1">
+        </head>
+        <body>
+          <center><h1>401 Authorization Required</h1></center>
+          <hr>
+          <center>goindex</center>
+        </body>
+        </html>
+      `,
+      _401 = new Response(_401_html, {
+        headers: {
+          "Content-Type": "text/html; charset=UTF-8",
+          "WWW-Authenticate": `Basic realm="goindex:drive:${this.order}"`,
+        },
+        status: 401,
       });
     if (user || pass) {
       const auth = request.headers.get('Authorization')
