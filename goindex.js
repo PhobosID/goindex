@@ -2,7 +2,7 @@ var authConfig = {
     "siteName": "goindex", // Sitename
     "root_pass": "",  // root password, leave it blank if you don't want
     // "version" : "1.0.7", // Program Version
-    "hash" : "18bc8f4", // master OR your HASH, do not leave blank (changes each time you make a commit)
+    "hash" : "33b73fe", // master OR your HASH, do not leave blank (changes each time you make a commit)
     "theme" : "classic", // material  classic 
     "client_id": "202264815644.apps.googleusercontent.com", // client_id from rclone config
     "client_secret": "X4Z3ca8xfWDb1Voo-F9a7ZxJ", // client_secret from rclone config
@@ -35,30 +35,52 @@ var authConfig = {
    * @param {Request} request
    */
   async function handleRequest(request) {
-      if(gd == undefined){
-        gd = new googleDrive(authConfig);
-      }
-  
-      if(request.method == 'POST'){
-        return apiRequest(request);
-      }
-  
-      let url = new URL(request.url);
-      let path = url.pathname;
-      let action = url.searchParams.get('a');
-  
-      if(path.substr(-1) == '/' || action != null){
-        return new Response(html,{status:200,headers:{'Content-Type':'text/html; charset=utf-8'}});
-      }else{
-        if(path.split('/').pop().toLowerCase() == ".password"){
-           return new Response("",{status:404});
-        }
-        let file = await gd.file(path);
-        let range = request.headers.get('Range');
-        return gd.down(file.id, range);
-      }
+  if (gd == undefined) {
+    gd = new googleDrive(authConfig);
   }
-  
+
+  if (request.method == 'POST') {
+    return apiRequest(request);
+  }
+
+  let url = new URL(request.url);
+  let path = url.pathname;
+  let action = url.searchParams.get('a');
+
+  if (path.substr(-1) == '/' || action != null) {
+    return new Response(html, {
+      status: 200,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' }
+    });
+  } else {
+    if (path.split('/').pop().toLowerCase() == ".password") {
+      return new Response("", { status: 404 });
+    }
+
+    try {
+      let file = await gd.file(path);
+      const range = request.headers.get('Range');
+      return gd.down(file.id, range);
+    } catch (err) {
+      const _404_html = `
+        <!DOCTYPE html>
+        <html class="notranslate" translate="no" lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <title>404 Not Found</title>
+            <meta name="viewport" content="width=device-width,minimum-scale=1">
+          </head>
+          <body>
+            <center><h1>404 Not Found</h1></center>
+            <hr>
+            <center>nginx/1.26.2 (Ubuntu)</center>
+          </body>
+        </html>
+      `;
+      return new Response(_404_html, { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
+    }
+  }
+}
   
   async function apiRequest(request) {
       let url = new URL(request.url);
