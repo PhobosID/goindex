@@ -170,272 +170,149 @@ addEventListener("fetch", (event) => {
  * @param {Request} request
  */
 async function handleRequest(request) {
-  if (gds.length === 0) {
-    for (let i = 0; i < authConfig.roots.length; i++) {
-      const gd = new googleDrive(authConfig, i);
-      await gd.init();
-      gds.push(gd);
+  try {
+    // Initialize gds if empty
+    if (gds.length === 0) {
+      for (let i = 0; i < authConfig.roots.length; i++) {
+        const gd = new googleDrive(authConfig, i);
+        await gd.init();
+        gds.push(gd);
+      }
+      // Parallelize the initialization for efficiency
+      let tasks = [];
+      gds.forEach((gd) => {
+        tasks.push(gd.initRootType());
+      });
+      // Wait for all root types to initialize
+      for (let task of tasks) {
+        await task;
+      }
     }
-    // 这个操作并行，提高效率
-    let tasks = [];
-    gds.forEach((gd) => {
-      tasks.push(gd.initRootType());
-    });
-    for (let task of tasks) {
-      await task;
+
+    // 从 path 中提取 drive order 并获取对应的 gd instance
+    let gd;
+    let url = new URL(request.url);
+    let path = decodeURI(url.pathname);
+
+    /**
+     * 重定向至起始页
+     * @returns {Response}
+     */
+    function redirectToIndexPage() {
+      return new Response("", {
+        status: 301,
+        headers: { Location: `/${authConfig.default_gd}:/` },  // Corrected string interpolation
+      });
     }
-  }
 
-  // 从 path 中提取 drive order
-  // 并根据 drive order 获取对应的 gd instance
-  let gd;
-  let url = new URL(request.url);
-  let path = decodeURI(url.pathname);
+    if (path == "/") return redirectToIndexPage();
+    if (path.toLowerCase() == "/favicon.ico") {
+      // Later, you can add a real favicon
+      return new Response("", { status: 404 });
+    }
 
-  /**
-   * 重定向至起始页
-   * @returns {Response}
-   */
-  function redirectToIndexPage() {
-    return new Response("", {
-      status: 301,
-      headers: { Location: `/${authConfig.default_gd}:/` },
+    // 特殊命令格式 (Special command format)
+    const command_reg = /^\/(?<num>\d+):(?<command>[a-zA-Z0-9]+)(\/.*)?$/g;
+    const match = command_reg.exec(path);
+    let command;
+    if (match) {
+      const num = match.groups.num;
+      const order = Number(num);
+      if (order >= 0 && order < gds.length) {
+        gd = gds[order];
+      } else {
+        return redirectToIndexPage();
+      }
+
+      // basic auth
+      const basic_auth_res = gd.basicAuthResponse(request);
+      if (basic_auth_res) return basic_auth_res;
+
+      command = match.groups.command;
+
+      // 搜索 (Search)
+      if (command === "search") {
+        if (request.method === "POST") {
+          return handleSearch(request, gd); // Handle search POST request
+        } else {
+          const params = url.searchParams;
+          // Return search page
+          return new Response(
+            html(gd.order, {
+              q: params.get("q") || "",
+              is_search_page: true,
+              root_type: gd.root_type,
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "text/html; charset=utf-8" },
+            }
+          );
+        }
+      } else if (command === "id2path" && request.method === "POST") {
+        return handleId2Path(request, gd);
+      } else if (command === "view") {
+        const params = url.searchParams;
+        return gd.view(params.get("url"), request.headers.get("Range"));
+      }
+    }
+
+    const reg = new RegExp(`^(/\\d+:)${command}/`, "g");  // Correct RegEx syntax
+    path = path.replace(reg, (p1, p2) => {
+      return p2 + "/";
     });
-  }
 
-  if (path == "/") return redirectToIndexPage();
-  if (path.toLowerCase() == "/favicon.ico") {
-    // 后面可以找一个 favicon
-    return new Response("", { status: 404 });
-  }
+    // 期望的 path 格式 (Expected path format)
+    const common_reg = /^\/\d+:\/.*$/g;
+    if (!path.match(common_reg)) {
+      return redirectToIndexPage();
+    }
 
-  // 特殊命令格式
-  const command_reg = /^\/(?<num>\d+):(?<command>[a-zA-Z0-9]+)(\/.*)?$/g;
-  const match = command_reg.exec(path);
-  let command;
-  if (match) {
-    const num = match.groups.num;
-    const order = Number(num);
+    let split = path.split("/");
+    let order = Number(split[1].slice(0, -1));
     if (order >= 0 && order < gds.length) {
       gd = gds[order];
     } else {
       return redirectToIndexPage();
     }
+
     // basic auth
-    for (const r = gd.basicAuthResponse(request); r; ) return r;
-    command = match.groups.command;
+    const basic_auth_res = gd.basicAuthResponse(request);
+    if (basic_auth_res) return basic_auth_res;
 
-    // 搜索
-    if (command === "search") {
-      if (request.method === "POST") {
-        // 搜索结果
-        return handleSearch(request, gd);
-      } else {
-        const params = url.searchParams;
-        // 搜索页面
-        return new Response(
-          html(gd.order, {
-            q: params.get("q") || "",
-            is_search_page: true,
-            root_type: gd.root_type,
-          }),
-          {
-            status: 200,
-            headers: { "Content-Type": "text/html; charset=utf-8" },
-          }
-        );
-      }
-    } else if (command === "id2path" && request.method === "POST") {
-      return handleId2Path(request, gd);
-    } else if (command === "view") {
-      const params = url.searchParams;
-      return gd.view(params.get("url"), request.headers.get("Range"));
-    } else if (command !== "down" && request.method === "GET") {
-      return new Response(html(gd.order, { root_type: gd.root_type }), {
+    path = path.replace(gd.url_path_prefix, "") || "/";
+
+    if (request.method == "POST") {
+      return basic_auth_res || apiRequest(request, gd);
+    }
+
+    let action = url.searchParams.get("a");
+
+    if (path.substr(-1) == "/" || action != null) {
+      return basic_auth_res || new Response(html(gd.order, { root_type: gd.root_type }), {
         status: 200,
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
-    }
-  }
-  const reg = new RegExp(`^(/\\d+:)${command}/`, "g");
-  path = path.replace(reg, (p1, p2) => {
-    return p2 + "/";
-  });
-  // 期望的 path 格式
-  const common_reg = /^\/\d+:\/.*$/g;
-  try {
-    if (!path.match(common_reg)) {
-      return redirectToIndexPage();
-    }
-    let split = path.split("/");
-    let order = Number(split[1].slice(0, -1));
-    if (order >= 0 && order < gds.length) {
-      gd = gds[order];
     } else {
-      return redirectToIndexPage();
-    }
-  } catch (e) {
-    return redirectToIndexPage();
-  }
-
-  // basic auth
-  // for (const r = gd.basicAuthResponse(request); r;) return r;
-  const basic_auth_res = gd.basicAuthResponse(request);
-  path = path.replace(gd.url_path_prefix, "") || "/";
-  if (request.method == "POST") {
-    return basic_auth_res || apiRequest(request, gd);
-  }
-
-  let action = url.searchParams.get("a");
-
-  if (path.substr(-1) == "/" || action != null) {
-    return (
-      basic_auth_res ||
-      new Response(html(gd.order, { root_type: gd.root_type }), {
-        status: 200,
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      })
-    );
-  } else {
-    if (
-      path
-        .split("/")
-        .pop()
-        .toLowerCase() == ".password"
-    ) {
-      return basic_auth_res || new Response("", { status: 404 });
-    }
-    let file = await gd.file(path);
-    async function handleRequest(request) {
-  if (gds.length === 0) {
-    for (let i = 0; i < this.accounts.length; i++) {
-      let authConfig = {
-        ...this.authConfig,
-        ...this.accounts[i]
+      if (
+        path.split("/")
+          .pop()
+          .toLowerCase() == ".password"
+      ) {
+        return basic_auth_res || new Response("", { status: 404 });
       }
-      const gd = new googleDrive(authConfig, i);
-      gds.push(gd);
+      let file = await gd.file(path);
+      const range = request.headers.get("Range");
+      if (gd.root.protect_file_link && basic_auth_res) return basic_auth_res;
+      const is_down = !(command && command == "down");
+      return gd.down(file.id, range, is_down);
     }
-    let tasks = [];
-    gds.forEach((gd) => {
-      tasks.push(gd.initRootType());
-    });
-    for (let task of tasks) {
-      await task;
-    }
-  }
-
-  let gd;
-  let url = new URL(request.url);
-  let path = decodeURI(url.pathname);
-
-  function redirectToIndexPage() {
-    return new Response("", {
-      status: 301,
-      headers: { Location: `/${authConfig.default_gd}:/` },
-    });
-  }
-
-  if (path == "/") return redirectToIndexPage();
-  if (path.toLowerCase() == "/favicon.ico") {
-    return new Response("", { status: 404 });
-  }
-
-  const command_reg = /^\/(?<num>\d+):(?<command>[a-zA-Z0-9]+)(\/.*)?$/g;
-  const match = command_reg.exec(path);
-  let command;
-  if (match) {
-    const num = match.groups.num;
-    const order = Number(num);
-    if (order >= 0 && order < gds.length) {
-      gd = gds[order];
-    } else {
-      return redirectToIndexPage();
-    }
-    for (const r = gd.basicAuthResponse(request); r; ) return r;
-    command = match.groups.command;
-    if (command === "search") {
-      if (request.method === "POST") {
-        return handleSearch(request, gd);
-      } else {
-        const params = url.searchParams;
-        return new Response(
-          html(gd.order, {
-            q: params.get("q") || "",
-            is_search_page: true,
-            root_type: gd.root_type,
-          }),
-          {
-            status: 200,
-            headers: { "Content-Type": "text/html; charset=utf-8" },
-          }
-        );
-      }
-    } else if (command === "id2path" && request.method === "POST") {
-      return handleId2Path(request, gd);
-    } else if (command === "view") {
-      const params = url.searchParams;
-      return gd.view(params.get("url"), request.headers.get("Range"));
-    } else if (command !== "down" && request.method === "GET") {
-      return new Response(html(gd.order, { root_type: gd.root_type }), {
-        status: 200,
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
-    }
-  }
-
-  const reg = new RegExp(`^(/\\d+:)${command}/`, "g");
-  path = path.replace(reg, (p1, p2) => {
-    return p2 + "/";
-  });
-
-  const common_reg = /^\/\d+:\/.*$/g;
-  try {
-    if (!path.match(common_reg)) {
-      return redirectToIndexPage();
-    }
-    let split = path.split("/");
-    let order = Number(split[1].slice(0, -1));
-    if (order >= 0 && order < gds.length) {
-      gd = gds[order];
-    } else {
-      return redirectToIndexPage();
-    }
-  } catch (e) {
-    return redirectToIndexPage();
-  }
-
-  const basic_auth_res = gd.basicAuthResponse(request);
-  path = path.replace(gd.url_path_prefix, "") || "/";
-
-  if (request.method == "POST") {
-    return basic_auth_res || apiRequest(request, gd);
-  }
-
-  let action = url.searchParams.get("a");
-
-  if (path.substr(-1) == "/" || action != null) {
-    return (
-      basic_auth_res ||
-      new Response(html(gd.order, { root_type: gd.root_type }), {
-        status: 200,
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      })
-    );
-  } else {
-    if (
-      path
-        .split("/")
-        .pop()
-        .toLowerCase() == ".password"
-    ) {
-      return basic_auth_res || new Response("Not Found", { status: 404 });
-    }
-    let file = await gd.file(path);
-    if (!file) {
-      const _404_html = `
-        <!DOCTYPE html>
-        <html class="notranslate" translate="no" lang="en">
+  } catch (err) {
+    // 如果指定路径下没有文件，则返回 404 错误 (returns with 404 page if the file is not exist in the path)
+    console.error("Unexpected error:", err);
+    const error_html = `
+      <!DOCTYPE html>
+      <html lang="en">
         <head>
           <meta charset="UTF-8">
           <title>404 Not Found</title>
@@ -446,24 +323,9 @@ async function handleRequest(request) {
           <hr>
           <center>goindex</center>
         </body>
-        </html>
-      `;
-
-      return new Response(_404_html, {
-        headers: { "Content-Type": "text/html; charset=UTF-8" },
-        status: 404,
-      });
-    }
-    const range = request.headers.get("Range");
-    if (gd.accounts.protect_file_link && basic_auth_res) return basic_auth_res;
-    const is_down = !(command && command == "down");
-    return gd.down(file.id, range, is_down);
-  }
-}
-    let range = request.headers.get("Range");
-    if (gd.root.protect_file_link && basic_auth_res) return basic_auth_res;
-    const is_down = !(command && command == "down");
-    return gd.down(file.id, range, is_down);
+      </html>
+    `;
+    return new Response(error_html, { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
 }
 
