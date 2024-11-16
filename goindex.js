@@ -73,7 +73,7 @@ var authConfig = {
           <body>
             <center><h1>404 Not Found</h1></center>
             <hr>
-            <center>nginx/1.26.2 (Ubuntu)</center>
+            <center>goindex</center>
           </body>
         </html>
       `;
