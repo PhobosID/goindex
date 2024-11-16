@@ -1,7 +1,7 @@
 const authConfig = {
   "siteName": "goindex", // Title
   "version": "_4.28", // Version
-  "hash": "",
+  "hash": "33b73fe",
   "client_id": "*******.apps.googleusercontent.com", // client_id from rclone config
   "client_secret": "*******", // client_secret from rclone config
   "refresh_token": "*******", // authorized refresh token from rclone config
@@ -146,11 +146,12 @@ addEventListener('fetch', event => {
  * @param {Request} request
  */
 async function handleRequest(request) {
+  // Initialize googleDrive instances if not already initialized
   if (gds.length === 0) {
     for (let i = 0; i < authConfig.roots.length; i++) {
       const gd = new googleDrive(authConfig, i);
       await gd.init();
-      gds.push(gd)
+      gds.push(gd);
     }
     // This operation is parallel and improves efficiency
     let tasks = [];
@@ -162,7 +163,7 @@ async function handleRequest(request) {
     }
   }
 
-  // extract drive order from path
+  // Extract drive order from path
   // and get the corresponding gd instance according to drive order
   let gd;
   let url = new URL(request.url);
@@ -173,13 +174,13 @@ async function handleRequest(request) {
    * @returns {Response}
    */
   function redirectToIndexPage() {
-    return new Response('', {status: 301, headers: {'Location': `${url.origin}/0:/`}});
+    return new Response('', { status: 301, headers: { 'Location': `${url.origin}/0:/` } });
   }
 
   if (path == '/') return redirectToIndexPage();
   if (path.toLowerCase() == '/favicon.ico') {
     // You can find a favicon later
-    return new Response('', {status: 404})
+    return new Response('', { status: 404 });
   }
 
   // Special command format
@@ -191,31 +192,32 @@ async function handleRequest(request) {
     if (order >= 0 && order < gds.length) {
       gd = gds[order];
     } else {
-      return redirectToIndexPage()
+      return redirectToIndexPage();
     }
-    // basic auth
+
+    // Basic auth check
     for (const r = gd.basicAuthResponse(request); r;) return r;
     const command = match.groups.command;
-    // search for
+
+    // Handle specific commands
     if (command === 'search') {
       if (request.method === 'POST') {
-        //search results
+        // Search results
         return handleSearch(request, gd);
       } else {
         const params = url.searchParams;
         // Search page
         return new Response(html(gd.order, {
-            q: params.get("q") || '',
-            is_search_page: true,
-            root_type: gd.root_type
-          }),
-          {
-            status: 200,
-            headers: {'Content-Type': 'text/html; charset=utf-8'}
-          });
+          q: params.get("q") || '',
+          is_search_page: true,
+          root_type: gd.root_type
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        });
       }
     } else if (command === 'id2path' && request.method === 'POST') {
-      return handleId2Path(request, gd)
+      return handleId2Path(request, gd);
     }
   }
 
@@ -230,14 +232,13 @@ async function handleRequest(request) {
     if (order >= 0 && order < gds.length) {
       gd = gds[order];
     } else {
-      return redirectToIndexPage()
+      return redirectToIndexPage();
     }
   } catch (e) {
-    return redirectToIndexPage()
+    return redirectToIndexPage();
   }
 
-  // basic auth
-  // for (const r = gd.basicAuthResponse(request); r;) return r;
+  // Basic auth response
   const basic_auth_res = gd.basicAuthResponse(request);
 
   path = path.replace(gd.url_path_prefix, '') || '/';
@@ -248,22 +249,49 @@ async function handleRequest(request) {
   let action = url.searchParams.get('a');
 
   if (path.substr(-1) == '/' || action != null) {
-    return basic_auth_res || new Response(html(gd.order, {root_type: gd.root_type}), {
+    return basic_auth_res || new Response(html(gd.order, { root_type: gd.root_type }), {
       status: 200,
-      headers: {'Content-Type': 'text/html; charset=utf-8'}
+      headers: { 'Content-Type': 'text/html; charset=utf-8' }
     });
   } else {
+    // If the path ends with ".password", return 404
     if (path.split('/').pop().toLowerCase() == ".password") {
-      return basic_auth_res || new Response("", {status: 404});
+      return basic_auth_res || new Response("", { status: 404 });
     }
-    let file = await gd.file(path);
-    let range = request.headers.get('Range');
-    const inline_down = 'true' === url.searchParams.get('inline');
-    if (gd.root.protect_file_link && basic_auth_res) return basic_auth_res;
-    return gd.down(file.id, range, inline_down);
+
+    try {
+      // Attempt to retrieve the file
+      let file = await gd.file(path);
+      let range = request.headers.get('Range');
+      const inline_down = 'true' === url.searchParams.get('inline');
+
+      // Check for file link protection and basic auth
+      if (gd.root.protect_file_link && basic_auth_res) return basic_auth_res;
+      
+      // Return the file download
+      return gd.down(file.id, range, inline_down);
+
+    } catch (err) {
+      // Returns with 404 page if the file is not exist in the path
+      const _404_html = `
+        <!DOCTYPE html>
+        <html class="notranslate" translate="no" lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <title>404 Not Found</title>
+            <meta name="viewport" content="width=device-width,minimum-scale=1">
+          </head>
+          <body>
+            <center><h1>404 Not Found</h1></center>
+            <hr>
+            <center>goindex</center>
+          </body>
+        </html>
+      `;
+      return new Response(_404_html, { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
+    }
   }
 }
-
 
 async function apiRequest(request, gd) {
   let url = new URL(request.url);
