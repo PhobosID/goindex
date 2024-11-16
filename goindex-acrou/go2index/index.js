@@ -309,8 +309,7 @@ async function handleRequest(request) {
     }
   } catch (err) {
     // 如果指定路径下没有文件，则返回 404 错误 (returns with 404 page if the file is not exist in the path)
-    console.error("Unexpected error:", err);
-    const error_html = `
+    const _404_html = `
       <!DOCTYPE html>
       <html lang="en">
         <head>
@@ -325,7 +324,7 @@ async function handleRequest(request) {
         </body>
       </html>
     `;
-    return new Response(error_html, { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
+    return new Response(_404_html, { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
   }
 }
 
