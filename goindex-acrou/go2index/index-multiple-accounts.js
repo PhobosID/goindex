@@ -180,152 +180,178 @@ var authConfig = {
    * Fetch and log a request
    * @param {Request} request
    */
-  async function handleRequest(request) {
-    if (gds.length === 0) {
-        for (let i = 0; i < this.accounts.length; i++) {
-          let authConfig = {
-            ...this.authConfig,
-            ...this.accounts[i]
-          }
-          const gd = new googleDrive(authConfig, i);
-          gds.push(gd);
-        }
-      // 这个操作并行，提高效率
-      let tasks = [];
-      gds.forEach((gd) => {
-        tasks.push(gd.initRootType());
-      });
-      for (let task of tasks) {
-        await task;
-      }
+async function handleRequest(request) {
+  // Ensure gds is populated with instances of googleDrive
+  if (gds.length === 0) {
+    for (let i = 0; i < this.accounts.length; i++) {
+      let authConfig = {
+        ...this.authConfig,
+        ...this.accounts[i]
+      };
+      const gd = new googleDrive(authConfig, i);
+      gds.push(gd);
     }
-  
-    // 从 path 中提取 drive order
-    // 并根据 drive order 获取对应的 gd instance
-    let gd;
-    let url = new URL(request.url);
-    let path = decodeURI(url.pathname);
-  
-    /**
-     * 重定向至起始页
-     * @returns {Response}
-     */
-    function redirectToIndexPage() {
-      return new Response("", {
-        status: 301,
-        headers: { Location: `/${authConfig.default_gd}:/` },
-      });
-    }
-  
-    if (path == "/") return redirectToIndexPage();
-    if (path.toLowerCase() == "/favicon.ico") {
-      // 后面可以找一个 favicon
-      return new Response("", { status: 404 });
-    }
-  
-    // 特殊命令格式
-    const command_reg = /^\/(?<num>\d+):(?<command>[a-zA-Z0-9]+)(\/.*)?$/g;
-    const match = command_reg.exec(path);
-    let command;
-    if (match) {
-      const num = match.groups.num;
-      const order = Number(num);
-      if (order >= 0 && order < gds.length) {
-        gd = gds[order];
-      } else {
-        return redirectToIndexPage();
-      }
-      // basic auth
-      for (const r = gd.basicAuthResponse(request); r; ) return r;
-      command = match.groups.command;
-  
-      // 搜索
-      if (command === "search") {
-        if (request.method === "POST") {
-          // 搜索结果
-          return handleSearch(request, gd);
-        } else {
-          const params = url.searchParams;
-          // 搜索页面
-          return new Response(
-            html(gd.order, {
-              q: params.get("q") || "",
-              is_search_page: true,
-              root_type: gd.root_type,
-            }),
-            {
-              status: 200,
-              headers: { "Content-Type": "text/html; charset=utf-8" },
-            }
-          );
-        }
-      } else if (command === "id2path" && request.method === "POST") {
-        return handleId2Path(request, gd);
-      } else if (command === "view") {
-        const params = url.searchParams;
-        return gd.view(params.get("url"), request.headers.get("Range"));
-      } else if (command !== "down" && request.method === "GET") {
-        return new Response(html(gd.order, { root_type: gd.root_type }), {
-          status: 200,
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        });
-      }
-    }
-    const reg = new RegExp(`^(/\\d+:)${command}/`, "g");
-    path = path.replace(reg, (p1, p2) => {
-      return p2 + "/";
+    
+    // Perform async initializations in parallel for efficiency
+    let tasks = [];
+    gds.forEach((gd) => {
+      tasks.push(gd.initRootType());
     });
-    // 期望的 path 格式
-    const common_reg = /^\/\d+:\/.*$/g;
-    try {
-      if (!path.match(common_reg)) {
-        return redirectToIndexPage();
-      }
-      let split = path.split("/");
-      let order = Number(split[1].slice(0, -1));
-      if (order >= 0 && order < gds.length) {
-        gd = gds[order];
-      } else {
-        return redirectToIndexPage();
-      }
-    } catch (e) {
+    for (let task of tasks) {
+      await task;
+    }
+  }
+
+  // Extract the path from the URL
+  let gd;
+  let url = new URL(request.url);
+  let path = decodeURI(url.pathname);
+
+  /**
+   * Redirect to the default index page
+   * @returns {Response}
+   */
+  function redirectToIndexPage() {
+    return new Response("", {
+      status: 301,
+      headers: { Location: `/${authConfig.default_gd}:/` },
+    });
+  }
+
+  // Handle root redirects
+  if (path == "/") return redirectToIndexPage();
+
+  // Handle favicon.ico requests
+  if (path.toLowerCase() == "/favicon.ico") {
+    return new Response("", { status: 404 });
+  }
+
+  // Handle special command formats
+  const command_reg = /^\/(?<num>\d+):(?<command>[a-zA-Z0-9]+)(\/.*)?$/g;
+  const match = command_reg.exec(path);
+  let command;
+  if (match) {
+    const num = match.groups.num;
+    const order = Number(num);
+    if (order >= 0 && order < gds.length) {
+      gd = gds[order];
+    } else {
       return redirectToIndexPage();
     }
-  
-    // basic auth
-    // for (const r = gd.basicAuthResponse(request); r;) return r;
-    const basic_auth_res = gd.basicAuthResponse(request);
-    path = path.replace(gd.url_path_prefix, "") || "/";
-    if (request.method == "POST") {
-      return basic_auth_res || apiRequest(request, gd);
-    }
-  
-    let action = url.searchParams.get("a");
-  
-    if (path.substr(-1) == "/" || action != null) {
-      return (
-        basic_auth_res ||
-        new Response(html(gd.order, { root_type: gd.root_type }), {
-          status: 200,
-          headers: { "Content-Type": "text/html; charset=utf-8" },
-        })
-      );
-    } else {
-      if (
-        path
-          .split("/")
-          .pop()
-          .toLowerCase() == ".password"
-      ) {
-        return basic_auth_res || new Response("", { status: 404 });
+    
+    // Check for basic auth response
+    for (const r = gd.basicAuthResponse(request); r; ) return r;
+    
+    command = match.groups.command;
+
+    // Handle 'search' command
+    if (command === "search") {
+      if (request.method === "POST") {
+        return handleSearch(request, gd);
+      } else {
+        const params = url.searchParams;
+        return new Response(
+          html(gd.order, {
+            q: params.get("q") || "",
+            is_search_page: true,
+            root_type: gd.root_type,
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+          }
+        );
       }
+    } else if (command === "id2path" && request.method === "POST") {
+      return handleId2Path(request, gd);
+    } else if (command === "view") {
+      const params = url.searchParams;
+      return gd.view(params.get("url"), request.headers.get("Range"));
+    } else if (command !== "down" && request.method === "GET") {
+      return new Response(html(gd.order, { root_type: gd.root_type }), {
+        status: 200,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    }
+  }
+
+  // Normalize path for expected format
+  const reg = new RegExp(`^(/\\d+:)${command}/`, "g");
+  path = path.replace(reg, (p1, p2) => {
+    return p2 + "/";
+  });
+  
+  const common_reg = /^\/\d+:\/.*$/g;
+  try {
+    if (!path.match(common_reg)) {
+      return redirectToIndexPage();
+    }
+    let split = path.split("/");
+    let order = Number(split[1].slice(0, -1));
+    if (order >= 0 && order < gds.length) {
+      gd = gds[order];
+    } else {
+      return redirectToIndexPage();
+    }
+  } catch (e) {
+    return redirectToIndexPage();
+  }
+
+  // Handle basic auth (uncomment as needed)
+  const basic_auth_res = gd.basicAuthResponse(request);
+  path = path.replace(gd.url_path_prefix, "") || "/";
+  
+  if (request.method == "POST") {
+    return basic_auth_res || apiRequest(request, gd);
+  }
+
+  let action = url.searchParams.get("a");
+
+  if (path.substr(-1) == "/" || action != null) {
+    return (
+      basic_auth_res ||
+      new Response(html(gd.order, { root_type: gd.root_type }), {
+        status: 200,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      })
+    );
+  } else {
+    if (
+      path
+        .split("/")
+        .pop()
+        .toLowerCase() == ".password"
+    ) {
+      return basic_auth_res || new Response("", { status: 404 });
+    }
+
+    try {
       let file = await gd.file(path);
-      let range = request.headers.get("Range");
+      const range = request.headers.get("Range");
       if (gd.accounts.protect_file_link && basic_auth_res) return basic_auth_res;
       const is_down = !(command && command == "down");
       return gd.down(file.id, range, is_down);
+    } catch (err) {
+      // 如果指定路径下没有文件，则返回 404 错误 (returns with 404 page if the file is not exist in the path)
+      const _404_html = `
+        <!DOCTYPE html>
+        <html class="notranslate" translate="no" lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <title>404 Not Found</title>
+            <meta name="viewport" content="width=device-width,minimum-scale=1">
+          </head>
+          <body>
+            <center><h1>404 Not Found</h1></center>
+            <hr>
+            <center>goindex</center>
+          </body>
+        </html>
+      `;
+      return new Response(_404_html, { status: 404, headers: { "Content-Type": "text/html; charset=utf-8" } });
     }
   }
+}
   
   async function apiRequest(request, gd) {
     let url = new URL(request.url);
@@ -465,26 +491,44 @@ var authConfig = {
      * @returns {Response|null}
      */
     basicAuthResponse(request) {
-      const user = this.accounts.user || "",
-        pass = this.accounts.pass || "",
-        _401 = new Response("Unauthorized", {
-          headers: {
-            "WWW-Authenticate": `Basic realm="goindex:drive:${this.order}"`,
-          },
-          status: 401,
-        });
-      if (user || pass) {
-        const auth = request.headers.get("Authorization");
-        if (auth) {
-          try {
-            const [received_user, received_pass] = atob(
-              auth.split(" ").pop()
-            ).split(":");
-            return received_user === user && received_pass === pass ? null : _401;
-          } catch (e) {}
+    const user = this.accounts.user || "",
+      pass = this.accounts.pass || "",
+      _401_html = `
+        <!DOCTYPE html>
+        <html class="notranslate" translate="no" lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <title>401 Authorization Required</title>
+          <meta name="viewport" content="width=device-width,minimum-scale=1">
+        </head>
+        <body>
+          <center><h1>401 Authorization Required</h1></center>
+          <hr>
+          <center>goindex</center>
+        </body>
+        </html>
+      `,
+      _401 = new Response(_401_html, {
+        headers: {
+          "Content-Type": "text/html; charset=UTF-8",
+          "WWW-Authenticate": `Basic realm="goindex:drive:${this.order}"`,
+        },
+        status: 401,
+      });
+
+    if (user || pass) {
+      const auth = request.headers.get("Authorization");
+      if (auth) {
+        try {
+          const [received_user, received_pass] = atob(auth.split(" ").pop()).split(":");
+          return received_user === user && received_pass === pass ? null : _401;
+        } catch (e) {
         }
-      } else return null;
-      return _401;
+      }
+    } else {
+      return null;
+    }
+    return _401;
     }
   
     async view(url, range = "", inline = true) {
