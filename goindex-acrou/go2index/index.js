@@ -306,6 +306,160 @@ async function handleRequest(request) {
       return basic_auth_res || new Response("", { status: 404 });
     }
     let file = await gd.file(path);
+    async function handleRequest(request) {
+  if (gds.length === 0) {
+    for (let i = 0; i < this.accounts.length; i++) {
+      let authConfig = {
+        ...this.authConfig,
+        ...this.accounts[i]
+      }
+      const gd = new googleDrive(authConfig, i);
+      gds.push(gd);
+    }
+    let tasks = [];
+    gds.forEach((gd) => {
+      tasks.push(gd.initRootType());
+    });
+    for (let task of tasks) {
+      await task;
+    }
+  }
+
+  let gd;
+  let url = new URL(request.url);
+  let path = decodeURI(url.pathname);
+
+  function redirectToIndexPage() {
+    return new Response("", {
+      status: 301,
+      headers: { Location: `/${authConfig.default_gd}:/` },
+    });
+  }
+
+  if (path == "/") return redirectToIndexPage();
+  if (path.toLowerCase() == "/favicon.ico") {
+    return new Response("", { status: 404 });
+  }
+
+  const command_reg = /^\/(?<num>\d+):(?<command>[a-zA-Z0-9]+)(\/.*)?$/g;
+  const match = command_reg.exec(path);
+  let command;
+  if (match) {
+    const num = match.groups.num;
+    const order = Number(num);
+    if (order >= 0 && order < gds.length) {
+      gd = gds[order];
+    } else {
+      return redirectToIndexPage();
+    }
+    for (const r = gd.basicAuthResponse(request); r; ) return r;
+    command = match.groups.command;
+    if (command === "search") {
+      if (request.method === "POST") {
+        return handleSearch(request, gd);
+      } else {
+        const params = url.searchParams;
+        return new Response(
+          html(gd.order, {
+            q: params.get("q") || "",
+            is_search_page: true,
+            root_type: gd.root_type,
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+          }
+        );
+      }
+    } else if (command === "id2path" && request.method === "POST") {
+      return handleId2Path(request, gd);
+    } else if (command === "view") {
+      const params = url.searchParams;
+      return gd.view(params.get("url"), request.headers.get("Range"));
+    } else if (command !== "down" && request.method === "GET") {
+      return new Response(html(gd.order, { root_type: gd.root_type }), {
+        status: 200,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    }
+  }
+
+  const reg = new RegExp(`^(/\\d+:)${command}/`, "g");
+  path = path.replace(reg, (p1, p2) => {
+    return p2 + "/";
+  });
+
+  const common_reg = /^\/\d+:\/.*$/g;
+  try {
+    if (!path.match(common_reg)) {
+      return redirectToIndexPage();
+    }
+    let split = path.split("/");
+    let order = Number(split[1].slice(0, -1));
+    if (order >= 0 && order < gds.length) {
+      gd = gds[order];
+    } else {
+      return redirectToIndexPage();
+    }
+  } catch (e) {
+    return redirectToIndexPage();
+  }
+
+  const basic_auth_res = gd.basicAuthResponse(request);
+  path = path.replace(gd.url_path_prefix, "") || "/";
+
+  if (request.method == "POST") {
+    return basic_auth_res || apiRequest(request, gd);
+  }
+
+  let action = url.searchParams.get("a");
+
+  if (path.substr(-1) == "/" || action != null) {
+    return (
+      basic_auth_res ||
+      new Response(html(gd.order, { root_type: gd.root_type }), {
+        status: 200,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      })
+    );
+  } else {
+    if (
+      path
+        .split("/")
+        .pop()
+        .toLowerCase() == ".password"
+    ) {
+      return basic_auth_res || new Response("Not Found", { status: 404 });
+    }
+    let file = await gd.file(path);
+    if (!file) {
+      const _404_html = `
+        <!DOCTYPE html>
+        <html class="notranslate" translate="no" lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <title>404 Not Found</title>
+          <meta name="viewport" content="width=device-width,minimum-scale=1">
+        </head>
+        <body>
+          <center><h1>404 Not Found</h1></center>
+          <hr>
+          <center>goindex</center>
+        </body>
+        </html>
+      `;
+
+      return new Response(_404_html, {
+        headers: { "Content-Type": "text/html; charset=UTF-8" },
+        status: 404,
+      });
+    }
+    const range = request.headers.get("Range");
+    if (gd.accounts.protect_file_link && basic_auth_res) return basic_auth_res;
+    const is_down = !(command && command == "down");
+    return gd.down(file.id, range, is_down);
+  }
+}
     let range = request.headers.get("Range");
     if (gd.root.protect_file_link && basic_auth_res) return basic_auth_res;
     const is_down = !(command && command == "down");
@@ -453,12 +607,29 @@ class googleDrive {
   basicAuthResponse(request) {
     const user = this.root.user || "",
       pass = this.root.pass || "",
-      _401 = new Response("Unauthorized", {
+      _401_html = `
+        <!DOCTYPE html>
+        <html class="notranslate" translate="no" lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <title>401 Authorization Required</title>
+          <meta name="viewport" content="width=device-width,minimum-scale=1">
+        </head>
+        <body>
+          <center><h1>401 Authorization Required</h1></center>
+          <hr>
+          <center>goindex</center>
+        </body>
+        </html>
+      `,
+      _401 = new Response(_401_html, {
         headers: {
+          "Content-Type": "text/html; charset=UTF-8",
           "WWW-Authenticate": `Basic realm="goindex:drive:${this.order}"`,
         },
         status: 401,
       });
+    
     if (user || pass) {
       const auth = request.headers.get("Authorization");
       if (auth) {
